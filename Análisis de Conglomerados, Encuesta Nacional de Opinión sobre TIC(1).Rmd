@@ -1,0 +1,832 @@
+---
+title: "Análisis de Conglomerados, Encuesta Nacional de Opinión sobre TIC"
+author: "Por: Ayar Yuman Paco Sanizo y Marco Antonio Vino Chipana"
+date: "22 de abril de 2018"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1. Introducción
+
+## 1.1 Descripción del proyecto
+
+A partir de la convocatoria del “CONCURSO SOBRE DATOS ABIERTOS Y USO DE LA ENCUESTA NACIONAL DE OPINIÓN SOBRE TIC” de la Agencia de gobierno electrónico y tecnologías de la información (AGETIC), iniciamos un proceso de exploración de la base de datos a fin de identificar un producto adecuado. En este proceso se identificó una gran cantidad de variables con valores perdidos que dificultaría y afectaría la representatividad de cualquier análisis posterior. Por tanto, se planteó un procedimiento de imputación que dio como resultado una base de datos reducida respecto a las variables que mantiene el total de observaciones. Por otra parte, se identificó una gran cantidad de variables categóricas en contraste a la cantidad de variables numéricas. Finalizada la exploración, se encuentró útil identificar conglomerados entre los encuestados respecto a la temática de las TIC.
+
+Bajo esta linea inicialmente se trato de identificar variables que permitan discriminar conglomerados considerando teorías económicas. Sin embargo esta era una tarea laboriosa y en muchos casos no se identificaban diferencias marcadas entre los conglomerados. Por tanto decidimos considerar un problema de aprendizaje no supervisado tomando una gran cantidad de variables para que bajo una perspectiva multivariante se puedan identificar conglomerados que esten considerablemente separados. El modelo elegido para este fin fue K-Prototypes, una combinación de K-means y K-modes, que permite considerar variables categóricas y numéricas.
+
+Una vez identificados los conglomerados resultaba importante seleccionar las variables más importantes en su definición. Es decir, encontrar las variables que permitan identificarlos con mayor facilidad. De esta forma se consideró un problema de aprendizaje supervisado para identificar las variables más importantes a la hora de predecir la pertencia de las observaciones a los conglomerados. Para esta tarea se consideró el modelo Random Forest por la facilidad que tiene para identificar variables importantes. Luego, tomando estas variables se volvieron a identificar conglomerados para finalmente realizar un análisis descriptivo cruzado respecto a las variables que ingresaron al modelo final y a otras de interés para la interpretación de los conglomerados. 
+
+## 1.2 Objetivos
+
+### 1.2.1 Objetivo General
+
+* Identificar conglomerados entre las personas encuestadas en la Encuesta Nacional de Opinión sobre TIC y describir su comportamiento.
+
+### 1.2.2 Objetivos Específicos
+
+* Pre-procesar la base de datos de la Encuesta Nacional de Opinión sobre TIC para poder identificar conglomerados representativos entre los encuestados.
+
+* Identificar conglomerados en la base de datos considerando variables categóricas y numéricas representativas.
+
+* Identificar las variables más importantes que permitan una mejor identificación de los conglomerados.
+
+* Realizar un análisis descriptivo de los conglomerados respecto a las variables que mejor los definen.
+
+* Realizar un análisis descriptivo de los conglomerados respecto a otras variables de interés.
+
+* Definir perfiles conceptuales de los conglomerados identificados.
+
+## 1.3 Consideraciones
+
+Es imporante notar que el presente proyecto tiene como resultado un análisis descriptivo de la muestra respecto a los conglomerados identificados. Esto es, no se puede asegurar que los resultados reflejen a la población. Este tratamiento inferencial es una tarea posterior que requiere un análisis minucioso considerando el método de muestreo usado en la encuesta.
+
+# 2. Pre-procesamiento
+
+A continuación se describe la etapa de pre-procesamiento de la base de datos. Partimos describiendo el análisis de valores faltantes, luego el proceso de imputación y finalmente la pre-selección de variables para la etapa de modelación. 
+
+```{r, include=FALSE}
+library(readxl)
+library(ggplot2)
+library(Amelia)
+library(VIM)
+library(mice)
+library(grid)
+library(gridExtra)
+bd <- read_excel("C:/Users/AYAR/Google Drive/Club de Ciencia de Datos/Bases de Datos/Encuesta Agetic/base-5536-bdfinalcorregido2.xlsx")
+```
+
+## 2.1 Análisis de valores faltantes
+
+Empezando el análsisis mapeamos los valores faltantes para tener una idea visual de la cantidad de datos perdidos en la encuesta. En esta primera etapa solo se consideran como valores faltantes a las celdas vacias. Esto es, aún no se consideran como faltantes a las celdas con codificaciones correspondientes a la etiqueta "No sabe/No responde". Este tratamiento se efectuará posteriomente.
+
+En el siguiente gráfico, en el eje vertical tenemos filas y en horizontal columnas de la base de datos. Las celdas con observaciones tienen un color guindo mientras que las celdas vacias tienen color beige. A partir de este mapeo se indentifica que de las 451 variables, la gran mayoría tiene bastantes datos faltantes.
+
+```{r, echo=FALSE}
+missmap(bd,y.labels=NULL,
+        y.at=NULL,x.cex = 0.1,
+        main = "Mapa de valores faltantes")
+```
+
+A continuación ordenamos las variables de la base de datos respecto a su porcentaje de valores perdidos y consideramos únicamente las variables que tienen hasta un 5% de valores faltantes como máximo. Las variables que pasan este filtro son:
+
+```{r, echo=FALSE}
+mice_plot <- aggr(bd,
+                  col=c('navyblue','yellow'),
+                  numbers=TRUE, sortVars=TRUE,
+                  labels=names(bd), cex.axis=.7,
+                  gap=3, ylab=c("Missing data","Pattern"),
+                  plot = F)
+
+missing_data <- mice_plot$missings
+row.names(missing_data) <- NULL
+missing_data$Percent <- missing_data$Count/length(bd$P152)
+
+var_consideradas <- missing_data[missing_data$Percent<=0.05,1]
+var_consideradas
+```
+
+Luego filtrando la base de datos con estas 60 variables y volviendo a mapear los valores faltantes obtenemos el siguiente mapeo de valores faltantes.
+
+```{r, echo=FALSE}
+bd_f <- bd[,var_consideradas]
+missmap(obj = bd_f, y.labels = NULL,
+        y.at=NULL, x.cex = 0.4,
+        main = "Mapa de valores faltantes")
+```
+
+## 2.2 Definición de tipos de variables y codificación de valores perdidos
+
+Ahora, si bien al parecer la base de datos resultante tiene pocos datos faltantes, debemos considerar que varias variables tienen codificaciones para la etiqueta "No sabe/No responde". Por tanto, resulta importante no solo definir si una variable es categorica o numerica, sino también codificar adecuadamente estas etiquetas como valores perdidos.
+
+Luego de efectuar este procedimiento, obtenemos el siguiente resumen de variables y el mapeo de valores faltantes actualizado.
+
+```{r, include=FALSE}
+bd_f$Tipo <- as.factor(bd_f$Tipo)
+bd_f$P2   <- as.factor(bd_f$P2)
+bd_f$P4   <- as.factor(bd_f$P4)
+bd_f$P6   <- as.factor(bd_f$P6)
+bd_f$P10  <- as.factor(bd_f$P10)
+bd_f$P12  <- as.factor(bd_f$P12)
+bd_f$P15A <- as.factor(bd_f$P15A)
+bd_f$P16  <- as.factor(bd_f$P16)
+bd_f$P17  <- as.factor(bd_f$P17)
+bd_f$P20  <- as.factor(bd_f$P20)
+bd_f$P23  <- as.factor(bd_f$P23)
+bd_f$P28  <- as.factor(bd_f$P28)
+bd_f$P31A <- as.factor(bd_f$P31A) 
+bd_f$P32  <- as.factor(bd_f$P32)
+bd_f$P33  <- as.factor(bd_f$P33)
+bd_f$P35  <- as.factor(bd_f$P35)
+
+bd_f$P36A[bd_f$P36A==9] <- NA
+bd_f$P36A  <- as.factor(bd_f$P36A)
+bd_f$P129A[bd_f$P129A==9] <- NA
+bd_f$P129A <- as.factor(bd_f$P129A)
+bd_f$P130A[bd_f$P130A==9] <- NA
+bd_f$P130A <- as.factor(bd_f$P130A)
+bd_f$P131A[bd_f$P131A==9] <- NA
+bd_f$P131A <- as.factor(bd_f$P131A)
+bd_f$P132A[bd_f$P132A==9] <- NA
+bd_f$P132A <- as.factor(bd_f$P132A)
+bd_f$P133A[bd_f$P133A==9] <- NA
+bd_f$P133A <- as.factor(bd_f$P133A)
+bd_f$P134[bd_f$P134==9] <- NA
+bd_f$P134  <- as.factor(bd_f$P134)
+bd_f$P135[bd_f$P135==9] <- NA
+bd_f$P135  <- as.factor(bd_f$P135)
+bd_f$P136[bd_f$P136==9] <- NA
+bd_f$P136  <- as.factor(bd_f$P136)
+bd_f$P137[bd_f$P137==9] <- NA
+bd_f$P137  <- as.factor(bd_f$P137)
+bd_f$P138[bd_f$P138==9] <- NA
+bd_f$P138  <- as.factor(bd_f$P138)
+bd_f$P139[bd_f$P139==9] <- NA
+bd_f$P139  <- as.factor(bd_f$P139)
+bd_f$P140[bd_f$P140==9] <- NA
+bd_f$P140  <- as.factor(bd_f$P140)
+
+bd_f$P148  <- as.factor(bd_f$P148)
+bd_f$P149  <- as.factor(bd_f$P149)
+bd_f$P150  <- as.factor(bd_f$P150)
+bd_f$P151  <- as.factor(bd_f$P151)
+bd_f$P152  <- factor(bd_f$P152,labels = c("AS","CP","NP","PI","EM","ES","AC","RJ","SB","SN"))
+bd_f$P153  <- as.factor(bd_f$P153)
+bd_f$P154A <- as.factor(bd_f$P154A)
+bd_f$P155  <- as.factor(bd_f$P155)
+bd_f$P156A <- as.factor(bd_f$P156A)
+bd_f$P156B <- as.factor(bd_f$P156B)
+bd_f$P156C <- as.factor(bd_f$P156C)
+bd_f$P156D <- as.factor(bd_f$P156D)
+bd_f$P156E <- as.factor(bd_f$P156E)
+bd_f$P156F <- as.factor(bd_f$P156F)
+bd_f$P156G <- as.factor(bd_f$P156G)
+bd_f$P156H <- as.factor(bd_f$P156H)
+bd_f$P156I <- as.factor(bd_f$P156I)
+bd_f$P156J <- as.factor(bd_f$P156J)
+bd_f$P156K <- as.factor(bd_f$P156K)
+bd_f$P157  <- as.factor(bd_f$P157)
+bd_f$P158  <- as.factor(bd_f$P158)
+bd_f$P159  <- as.factor(bd_f$P159)
+bd_f$P160  <- as.factor(bd_f$P160) 
+bd_f$CodP160 <- as.factor(bd_f$CodP160)
+bd_f$Nse <- as.factor(bd_f$Nse)
+
+bd_f$P14[bd_f$P14==9]  <- NA
+bd_f$P30[bd_f$P30==99] <- NA
+bd_f$P34[bd_f$P34==99] <- NA
+
+```
+
+```{r, echo=FALSE}
+summary(bd_f)
+```
+
+```{r, echo = FALSE}
+bd_fa2 <- bd_f
+missmap(bd_fa2, y.labels = NULL,
+        y.at=NULL, x.cex = 0.4,
+        main = "Mapa de valores faltantes")
+```
+
+## 2.3 Imputación de datos faltantes
+
+A partir de la base de datos resultante efectuamos un proceso de imputación para completar los valores de las variables que tienen valores perdidos. Este proceso de imputación considera dos métodos según el tipo de variable:
+
+* Predictive mean matching (pmm), para variables cuantitativas
+* Polytomous logistic regression (polyreg), para variables categóricas
+
+Luego, los métodos de imputación correspondientes a cada variable con valores faltantes son:
+
+```{r, include=FALSE}
+tempDataImput <- readRDS("C:/Users/AYAR/Google Drive/Club de Ciencia de Datos/Bases de Datos/Encuesta Agetic/tempDataImput.rds")
+```
+
+```{r, echo=FALSE}
+tempDataImput$method[tempDataImput$method!=""]
+```
+
+Ahora, el proceso de imputación genera cinco bases de datos imputadas. Las cinco son diferentes porque en cada caso los métodos de imputación simulan valores para los valores perdidos. De esta forma, a fin de validar este proceso de imputación, se muestran los siguientes gráficos de dispersión. En cada gráfico, el valor 0 en el eje X representa la distribución original y el resto de valores (1, 2, 3, 4 y 5) representan las distribuciones en las bases de datos imputadas, donde los puntos celestes son valores reales y los puntos rojos valores imputados. Analizando estos gráficos puede observarse que las imputaciones mantienen los comportamientos de distribución y por tanto podemos validar el procedimiento usado.
+
+
+```{r, echo=FALSE}
+plots <- list()
+plots[[1]]  <- stripplot(tempDataImput,P14  , pch = 20, cex = 1.2)
+plots[[2]]  <- stripplot(tempDataImput,P15A , pch = 20, cex = 1.2)
+plots[[3]]  <- stripplot(tempDataImput,P30  , pch = 20, cex = 1.2)
+plots[[4]]  <- stripplot(tempDataImput,P31A , pch = 20, cex = 1.2)
+plots[[5]]  <- stripplot(tempDataImput,P32  , pch = 20, cex = 1.2)
+plots[[6]]  <- stripplot(tempDataImput,P33  , pch = 20, cex = 1.2)
+plots[[7]]  <- stripplot(tempDataImput,P34  , pch = 20, cex = 1.2)
+plots[[8]]  <- stripplot(tempDataImput,P35  , pch = 20, cex = 1.2)
+plots[[9]]  <- stripplot(tempDataImput,P36A , pch = 20, cex = 1.2)
+plots[[10]] <- stripplot(tempDataImput,P129A, pch = 20, cex = 1.2)
+plots[[11]] <- stripplot(tempDataImput,P130A, pch = 20, cex = 1.2)
+plots[[12]] <- stripplot(tempDataImput,P131A, pch = 20, cex = 1.2)
+plots[[13]] <- stripplot(tempDataImput,P132A, pch = 20, cex = 1.2)
+plots[[14]] <- stripplot(tempDataImput,P133A, pch = 20, cex = 1.2)
+plots[[15]] <- stripplot(tempDataImput,P134 , pch = 20, cex = 1.2)
+plots[[16]] <- stripplot(tempDataImput,P135 , pch = 20, cex = 1.2)
+plots[[17]] <- stripplot(tempDataImput,P136 , pch = 20, cex = 1.2)
+plots[[18]] <- stripplot(tempDataImput,P137 , pch = 20, cex = 1.2)
+plots[[19]] <- stripplot(tempDataImput,P138 , pch = 20, cex = 1.2)
+plots[[20]] <- stripplot(tempDataImput,P139 , pch = 20, cex = 1.2)
+plots[[21]] <- stripplot(tempDataImput,P140 , pch = 20, cex = 1.2)
+
+grid.arrange(grobs=plots[1:4]  , ncol=2)
+grid.arrange(grobs=plots[5:8]  , ncol=2)
+grid.arrange(grobs=plots[9:12] , ncol=2)
+grid.arrange(grobs=plots[13:16], ncol=2)
+grid.arrange(grobs=plots[17:20], ncol=2)
+grid.arrange(grobs=plots[21]   , ncol=2, nrow=2)
+```
+
+Concluido el proceso de imputación, claramente el mapeo de valores faltantes nos muestra que ya no existen valores faltantes.
+
+```{r, echo=FALSE}
+bd_fa2c <- complete(tempDataImput,1)
+missmap(bd_fa2c, y.labels = NULL,
+        y.at=NULL, x.cex = 0.4,
+        main = "Mapa de valores faltantes")
+```
+
+## 2.4 Pre-selección de variables para la etapa de modelación
+
+Ahora, dado que en la etapa de modelación usaremos un modelo de conglomerados debemos dejar de lado variables que no aporten a la separación de los mismos. De esta forma, no tiene sentido considerar el número de encuestado (NUMBOL), el ponderador (Ponderador5536) ni la variable (Nse). Por otra parte, la pregunta 31 de la encuesta a internautas: ¿Qué usos le da a su celular? permite varias respuestas. Luego, la variable P31A es tan solo una de las respuestas de los encuestados y no necesariamente representa el uso más importante, y en todo caso es probable que tan solo represente el primer valor digitado en la base de datos respecto a esta pregunta. Por este motivo, tampoco resultaría beneficioso considerar la pregunta P31A. Finalmente, las variables P160 y CodP160 representan el nombre y código de las comunidades a las que pertenecen los ecuestados, cada una con un total de 97 alternativas posibles y donde en varios casos se tienen menos de 10 observaciones. Luego, este total de alternativas genera un problema técnico en la segunda etapa de modelación donde se aplicará el modelo Random Forest, motivo por el cual no se consideran ambas variables.
+
+Tomando esta pre-selección de variables, a continuación se muestra el resumen de la base de datos que ingresará a la etapa de modelación.
+
+```{r, echo=FALSE}
+summary(bd_fa2c[,-c(1,17,57,58,59,60)])
+```
+
+# 3. Modelación
+
+A continuación se describe la etapa de modelación. Partimos describiendo el análisis de conglomerados por K-Prototypes, luego se explica el proceso de identificación de variables importantes por Random Forest y finalmente se resume el segundo análisis de conglomerados por K-Prototypes considerando el subconjunto de variables importantes.
+
+```{r, include=FALSE}
+library(clustMixType)
+library(randomForest)
+library(party)
+i_data <- readRDS("C:/Users/AYAR/Google Drive/Club de Ciencia de Datos/Bases de Datos/Encuesta Agetic/bd_imputada.rds")
+i_input <- i_data[,-c(1,17,57,58,59,60)]
+```
+
+## 3.1 Análisis de Conglomerados por K-Prototypes
+
+Para empezar resolvemos un problema de aprendizaje no supervisado aplicando el modelo de conglomerados K-Prototypes. El objetivo es identificar tres conglomerados, y si bien es posible tratar de identificar un número óptimo, se define tres como parámetro para fines de interpretación.
+
+Luego de aplicar este primer modelo podemos ver que el 36.25% de las observaciones pertenece al conglomerado 1, 21.35% al conglomerado 2 y 42.40% al conglomerado 3.
+
+```{r, echo=FALSE}
+set.seed(12345)
+i_clust.mod <- kproto(i_input,3)
+i_clust.table <- table(i_clust.mod$cluster)
+round(i_clust.table/nrow(i_input)*100,2)
+```
+
+Ahora revisamos el resumen del modelo K-Prototypes que muestra comparaciones entre los conglomerados a partir de distintos estadisticos, para variables categóricas proporciones y para variables cuantitativas medidas de posición.
+
+```{r, echo=FALSE}
+summary(i_clust.mod)
+```
+
+Notemos que en los resultados existen variables donde la diferencia entre conglomerados es mínima. De esta forma, a continuación se plantea un método para seleccionar las variables más importantes para la identificación de los conglomerados.
+
+## 3.2 Indentificación de Variables Importantes por Random Forest
+
+Para identificar las variables más importantes ahora consideramos un problema de aprendizaje supervisado donde trataremos de predecir el conglomerado al que pertence cada observación a partir de las variables que ingresaron al modelo K-Prototypes. Para este fin, primero partiremos la base de datos en dos partes: un conjunto de observaciones de entrenamiento y otro de prueba.
+
+A continuación se preparan los datos para la modelación y se aplica el modelo Random Forest. Se toma el conjunto de entrenamiento y se define la selección aleatoria de dos mil árboles de decisión que en promedio estimarán la pertenencia de cualquier observación a alguno de los conglomerados.
+
+```{r, echo=FALSE}
+i_new_data <- i_input
+i_new_data$cluster <- as.factor(i_clust.mod$cluster)
+
+set.seed(12345)
+train = sample(1:nrow(i_new_data), nrow(i_new_data)/2)
+
+set.seed(12345)
+i_rf.mod <- randomForest(cluster ~ ., data = i_new_data, subset=train,
+                         importance=TRUE, ntree=2000)
+```
+
+Una vez entrenado el modelo, ahora nos interesa identificar las variables más importantes. Para este fin primero analizamos la exactitud en la predicción de los conglomerados a partir de la tabla de confusión considerando el conjunto de observaciones de prueba. Esta tabla no es más que una tabla de contingencia donde en las filas se tienen los conglomerados predichos y en las columnas los conglomerados efectivos. Luego, la exactitud de predicción es la relación entre la sumatoria de los valores de la diagonal de la tabla y el total de observaciones de prueba. A partir de este cálculo, obtenemos una exactitud de predicción de 88.19%. Con este primer paso validamos la idea de que podemos predecir la pertenencia de los conglomerados a partir de las variables que ingresaron al modelo K-Prototypes.
+
+```{r, echo=FALSE}
+clust.i_rf.hat <- predict(i_rf.mod,newdata = i_new_data[-train,])
+i_ct <- table(clust.i_rf.hat,i_new_data[-train,]$cluster)
+i_ct <- as.matrix(i_ct)
+i_ct
+print(paste("EP =",round(sum(diag(i_ct))/nrow(i_new_data[-train,])*100,2)))
+```
+
+Como segundo paso, ordenamos las variables que ingresaron al modelo Random Forest por su reducción promedio en la exactitud de predicción si se dejaran de considerar en el modelo.
+
+```{r, echo=FALSE}
+vi.i_rf.mod <- i_rf.mod$importance[,4]
+barplot(vi.i_rf.mod[order(vi.i_rf.mod)],
+     main = "RF - Variables Importantes",
+     xlab = "MeanDecreaseAccuracy",horiz = T,
+     cex.axis = 0.8,
+     cex.names = 0.4,las=2)
+abline(v=0.01,col="red")
+
+```
+
+Filtrando aquellas variables que tienen una reducción promedio en la exactitud de predicción mayor a 0.01, identificamos las siguientes variables imporantes para la definición de los conglomerados.
+
+```{r, echo=FALSE}
+vi.i_rf.mod_f <- data.frame(vi.i_rf.mod[vi.i_rf.mod>0.01][order(vi.i_rf.mod[vi.i_rf.mod>0.01],decreasing = T)])
+colnames(vi.i_rf.mod_f) <- "MeanDecreaseAccuracy"
+vi.i_rf.mod_f
+```
+
+## 3.3 Análisis de Conglomerados por K-Prototypes tomando variables importantes
+
+Ahora volvemos a obtener conglomerados a partir de K-Prototypes considerando las variables importantes. En este caso podemos ver que el 56.59% de las observaciones pertenece al conglomerado 1, 11.96% al conglomerado 2 y 31.45% al conglomerado 3. Es importante notar que si bien se ha presentado una rotación en los conglomerados, aún se preserva una distribución de proporciones similar a la inicial, con una mayoria, una minoria y un intermedio.
+
+```{r, echo=FALSE}
+i_input_f <- i_input[,rownames(vi.i_rf.mod_f)]
+set.seed(12345)
+i_clust.mod_f <- kproto(i_input_f,3)
+i_clust.table_f <- table(i_clust.mod_f$cluster)
+round(i_clust.table_f/nrow(i_input_f)*100,2)
+```
+
+Por otra parte, a fin de validar la seleccion de variables veamos el efecto en la exactitud de predicción considerando nuevamente un modelo Random Forest.
+
+```{r, echo=FALSE}
+i_new_data_f <- i_input_f
+i_new_data_f$cluster <- as.factor(i_clust.mod_f$cluster)
+
+set.seed(12345)
+i_rf.mod_f <- randomForest(cluster ~ ., data = i_new_data_f, subset=train,
+                           importance=TRUE, ntree=2000)
+
+clust.i_rf_f.hat <- predict(i_rf.mod_f,newdata = i_new_data_f[-train,])
+i_ct_f <- table(clust.i_rf_f.hat,i_new_data_f[-train,]$cluster)
+i_ct_f <- as.matrix(i_ct_f)
+i_ct_f
+print(paste("EP =",round(sum(diag(i_ct_f))/nrow(i_new_data_f[-train,])*100,2)))
+```
+
+Notemos que considerando las variables importantes de hecho se ha incrementado la exactitud en las predicciones. Esto se debe a que los nuevos conglomerados tienen mayor separación en sus características. Esto es, la pérdida en la exactiud de predicción por dejar de considerar variables menos importantes resulto menor a la ganancia por considerar variables que separan mejor a los conglomerados.
+
+# 4. Análisis de resultados
+
+Para el análisis de resultados previamente renombramos los conglomerados identificados. El conglomerado mayoría tendrá la etiqueta A, el conglomerado intermedio la etiqueta B y la minoría la etiqueta C.
+
+```{r, echo=FALSE}
+i_new_data_f$cluster = factor(i_new_data_f$cluster,
+                              levels(i_new_data_f$cluster)[c(1,3,2)])
+levels(i_new_data_f$cluster) <- c("A","B","C")
+round(prop.table(table(i_new_data_f$cluster))*100,2)
+```
+
+## 4.1 Descripción de conglomerados respecto a las variables seleccionadas
+
+En esta sección haremos una descripción de las variables que hallamos más importantes para la clasificación de los conglomerados y otras de interés dentro de la encuesta.  
+
+```{r, include=FALSE}
+library(ggplot2)
+#inlcuyendo variables para el análisis
+i_new_data_f$P1    <- i_data$P1
+i_new_data_f$P150  <- i_data$P150
+i_new_data_f$P23   <- i_data$P23
+i_new_data_f$P134  <- i_data$P134
+i_new_data_f$P131A <- i_data$P131A
+i_new_data_f$P23   <- i_data$P23
+i_new_data_f$P36A  <- i_data$P36A
+i_new_data_f$P136  <- i_data$P136
+i_new_data_f$P129A <- i_data$P129A
+i_new_data_f$P133A <- i_data$P133A
+i_new_data_f$P15A  <- i_data$P15A
+
+```
+
+### 4.1.1 Costo del último televisor (P14)
+
+En el análisis anterior pudimos observar que la variable que más aporta a la distinción entre los diferentes grupos, es el costo del último televisor que se compró en el hogar (P14). Respecto a esta variable podemos ver que las diferencias de los promedios entre los grupos son significativas, el grupo C gastó en promedio Bs 4.745, mientras que el grupo A y B gastaron en promedio Bs 1.622 y Bs 1.897, respectivamente.  
+
+```{r, echo=FALSE}
+tapply(i_new_data_f$P14, i_new_data_f$cluster, summary)
+ggplot(i_new_data_f, aes(x=cluster, y=P14, fill=cluster)) + 
+  geom_boxplot()
+```
+
+### 4.1.2 Tenencia de computadora de escritorio, computadora portátil o táblet en casa (P6)
+
+Podemos observar claras diferencias entre el grupo A, respecto a los grupos B y C.  Tenemos que tan solo el 23% de las personas del grupo A tienen computadoras de escritorio, portatiles o tables en su hogar, mientras que los grupos B y C los tienen en un 86% y 81%, respectivamente. Esto nos puede mostrar que la tenencia de estos bienes influye en que las personas de los grupos B y C tengan mayor facilidad de acceso al uso de la tecnología frente al grupo A.  
+
+```{r, echo=FALSE}
+#Aumentamos el margin igual a dos para ver la proporción de personas por cluster que tienen o no acceso computadoras o tables
+round(prop.table(table(i_new_data_f$P6, i_new_data_f$cluster), margin =2),2)
+ggplot(i_new_data_f, aes(x=P6, fill=cluster)) + 
+  geom_bar(aes(y=..prop.., group = cluster),position=position_dodge())
+```
+
+### 4.1.3 Tenencia de servicio de TV Cable (P16)
+
+El comportamiento de la variable de tenencia de servicio de TV cable en el hogar tiene un comportamiento similiar. Se muestra que una minoria del grupo A (20%) tiene TV cable, frente a una mayoria para los grupos B y C (70% y 65%).  
+
+```{r, echo=FALSE}
+round(prop.table(table(i_new_data_f$P16, i_new_data_f$cluster)),2)
+round(prop.table(table(i_new_data_f$P16, i_new_data_f$cluster), margin =2),2)
+ggplot(i_new_data_f, aes(x=P16, fill=cluster)) + 
+  geom_bar(aes(y=..prop.., group = cluster),position=position_dodge())
+```
+
+### 4.1.4 Nivel de instrucción del jefe de hogar (P153)
+
+En lo que concierne al nivel de instrucción del jefe del hogar podemos observar una concentración importante diferenciada por grupos. En el caso del grupo A esta concentración está en las categorías de primaria o menos, secundaria incompleta y secundaria completa (1,2,3) llegando a representar el 73% de las personas del grupo A, con el 30% de las personas de este grupo donde el(la) jefe(a) de hogar tiene la secundaria completa. Mientras que en los grupos B y C el jefe de hogar con mayor frecuencia tiene la universidad completa, representando el aproximadamente el 29% para los 2 grupos. 
+
+```{r, echo=FALSE}
+# Proporciones 
+round(prop.table(table(i_new_data_f$P153, i_new_data_f$cluster)),2)
+
+# Proporciones marginales por columnas
+round(prop.table(table(i_new_data_f$P153, i_new_data_f$cluster), margin=2),2)
+
+# Proporciones marginales por filas
+round(prop.table(table(i_new_data_f$P153, i_new_data_f$cluster), margin=1),2)
+ggplot(i_new_data_f, aes(x=P153, fill=cluster)) + 
+  geom_bar(aes(y=..prop.., group = cluster),position=position_dodge())
+```
+
+### 4.1.5 Tipo de localidad (P159)
+
+Respecto a la distribución del tipo de localidad en el que habitan las personas de los grupos, podemos observar que los grupos B y C estan fuertemente concentrados en las ciudades capitales siendo que el 79% de las personas del grupo B viven en ciudades capitales y el 69% de las personas del grupo C. Al mismo tiempo, observamos que la distribución del grupo A es más dispersa y concentra al 40% de las personas del grupo en centros poblados de entre 2.000 y 10.000 habitantes, y al 38% en ciudades capitales. 
+
+```{r, echo=FALSE}
+round(prop.table(table(i_new_data_f$P159, i_new_data_f$cluster)),2)
+
+round(prop.table(table(i_new_data_f$P159, i_new_data_f$cluster), margin = 2),2)
+
+round(prop.table(table(i_new_data_f$P159, i_new_data_f$cluster), margin = 1),2)
+
+ggplot(i_new_data_f, aes(x=P159, fill=cluster)) + 
+  geom_bar(aes(y=..prop.., group = cluster),position=position_dodge())
+```
+ 
+### 4.1.6 Nivel de instrucción del entrevistado (P149)
+
+Respecto al nivel de instrucción del entrevistado podemos observar que la mayoría del grupo A tiene la secundaria incompleta (30%) o la secundaria completa (28%). Por otra parte la mayoría del grupo B tiene la secundaria completa (24%) o la universidad incompelta (24%). Finalmente la mayoria del grupo C tiene la universidad incompleta (28%) o la universidad completa (20%).
+
+```{r, echo=FALSE}
+round(prop.table(table(i_new_data_f$P149, i_new_data_f$cluster)),2)
+round(prop.table(table(i_new_data_f$P149, i_new_data_f$cluster), margin=2),2)
+round(prop.table(table(i_new_data_f$P149, i_new_data_f$cluster), margin =1),2)
+ggplot(i_new_data_f, aes(x=P149, fill=cluster)) + 
+  geom_bar(aes(y=..prop.., group = cluster),position=position_dodge())
+```
+
+### 4.1.7 Sexo (P148)
+
+Del total de datos en la encuesta el 50% se la realizó a hombres, y otro 50% a mujeres, pero en nuestra clasificación por categorías podemos observar que hay diferencias, no tan grandes, pero estas existen.  por ejemplo el grupo A esta en su mayoria compuesto por mujeres, llegando a representar el 58% del grupo.  El grupo que tiene más diferencias es el B, con 62% de hombres frente a un 38% de mujeres. Mientras que el grupo C tiene el comportamiento inverso al de A, en este el 59% son hombres y un 41% son mujeres. 
+
+```{r, echo=FALSE}
+round(prop.table(table(i_new_data_f$P148, i_new_data_f$cluster)),2)
+round(prop.table(table(i_new_data_f$P148, i_new_data_f$cluster), margin =2),2)
+
+ggplot(i_new_data_f, aes(x=P148, fill=cluster)) + 
+  geom_bar(aes(y=..prop.., group = cluster),position=position_dodge())
+```
+ 
+### 4.1.8 Tenencia de microondas (P156E)
+
+Siguiendo la línea de la tenencia de bienes podemos observar claramente las diferencias que existen entre los grupos. Del total de la encuesta tan solo el 22% de los hogares tienen microndas, y haciendo la división por grupos, tenemos que el 94% de las personas del grupo A no poseen microondas, mientras que en  los grupos B y C  las diferencias entre los que poseen microondas y los que no, no son tan grandes, llegando a 22 y 6 puntos porcentuales, frente a la diferencia de 88 puntos porcentuales del grupo A. 
+
+```{r, echo=FALSE}
+round(prop.table(table(i_new_data_f$P156E, i_new_data_f$cluster)),2)
+round(prop.table(table(i_new_data_f$P156E, i_new_data_f$cluster), margin=2),2)
+ggplot(i_new_data_f, aes(x=P156E, fill=cluster)) + 
+  geom_bar(aes(y=..prop.., group = cluster),position=position_dodge())
+```
+
+### 4.1.9 Tenencia de lavadora de ropa (P156D)
+
+Respecto a la lavaroda de ropa, el comportamiento es similar, la gran mayoría de las personas del grupo A no tienen lavadora de ropa (90%) mientras que los grupos B y C si poseen este bien, con un 61% y 54% de hogares que poseen lavadora de ropa, respectivamente.  
+
+```{r, echo=FALSE}
+round(prop.table(table(i_new_data_f$P156D, i_new_data_f$cluster)),2)
+round(prop.table(table(i_new_data_f$P156D, i_new_data_f$cluster), margin =2),2)
+ggplot(i_new_data_f, aes(x=P156D, fill=cluster)) + 
+  geom_bar(aes(y=..prop.., group = cluster),position=position_dodge())
+```
+
+### 4.1.10 Consideración de medio más imparcial (P138)
+
+Podemos observar que para los 3 grupos el medio de comunicación más imparcial es la TV, con proporciones de los grupos entre 41 y 30 porciento.  Al mismo tiempo podemos observar que el grupo C es el más escéptico respecto a la imparcialidad de los medios de comunicación, siendo que el 20% de este grupo considera que ningún medio de comunicación es imparcial. 
+
+```{r, echo=FALSE}
+round(prop.table(table(i_new_data_f$P138, i_new_data_f$cluster)),2)
+round(prop.table(table(i_new_data_f$P138, i_new_data_f$cluster), margin =2),2)
+ggplot(i_new_data_f, aes(x=P138, fill=cluster)) + 
+  geom_bar(aes(y=..prop.., group = cluster),position=position_dodge())
+```
+ 
+### 4.1.11 Consideración de medio más abierto a la participación (P140)
+
+La mayoría de las personas del grupo A consideran a la televisión como el medio de comunicación más participativo, mientras que los grupos B y C tienen una clara preferencia por las redes sociales. Es interesante observar la interacción que tienen las personas con los medios y lo imparciales que creen que son. en este caso, si bien las redes sociales son las más participativas ocupaban el cuarto lugar en la escala de medios imparciales. 
+
+```{r, echo=FALSE}
+round(prop.table(table(i_new_data_f$P140, i_new_data_f$cluster)),2)
+round(prop.table(table(i_new_data_f$P140, i_new_data_f$cluster), margin =2),2)
+ggplot(i_new_data_f, aes(x=P140, fill=cluster)) + 
+  geom_bar(aes(y=..prop.., group = cluster),position=position_dodge())
+```
+
+### 4.1.12 Departamento (P158)
+
+Podemos notar una concentración importante del grupo C en La Paz (22%), Cochabamba (15%) y Pando(13%), mientras que los demás grupos están distribuidos de manera más regular entre todos los departamentos.  
+
+```{r, echo=FALSE}
+round(prop.table(table(i_new_data_f$P158, i_new_data_f$cluster)),2)
+round(prop.table(table(i_new_data_f$P158, i_new_data_f$cluster), margin =2),2)
+ggplot(i_new_data_f, aes(x=P158, fill=cluster)) + 
+  geom_bar(aes(y=..prop.., group = cluster),position=position_dodge())
+```
+
+### 4.1.13 Días a la semana de uso de computadora de escritorio, computadora portátil o táblet(P10)
+
+En lo que concierne a la intensidad de uso de computadoras de escritorio, portatiles o tables, podemos observar claramente un comportamiento diferenciado. Para el grupo A, el 68% de sus integrantes no usan los equipos mostrados.  Esto va en coherencia que justamente el grupo A eran aquellas personas que no tenian acceso a estos equipos en su hogar. Al mismo tiempo, de las personas que pertencen a este grupo y si utilizan estos equipos, podemos observar que hay una concentración en frecuencias bajas, es decir el 16% de las personas del grupo A utilizan estos equipos entre 1 y 3 veces a la semana, y estas personas representan cerca del 42% de las personas que si utilizan estos equipos dentro del grupo A.  
+
+El comportamiento de los otros grupos es cualitativamente diferente, ya que estos estan más "conectados". En el grupo C, el 62% de las personas utilizan estos equipos entre 3 a 7 días a la semana, siendo que el 31% de las personas del grupo C los usan todos los días. El grupo B tiene un comportamiento similar pero con valores un poco más bajos, el 58% de las personas del grupo B utilizan estos equipos entre 3 a 7 días a la semana, con un 22% de personas que los usan todos los días.  
+
+Este comportamiento nos hace pensar que las personas del grupo C son aquellas que más interactuan con las TICS.  
+
+```{r, echo=FALSE}
+round(prop.table(table(i_new_data_f$P10, i_new_data_f$cluster)),2)
+round(prop.table(table(i_new_data_f$P10, i_new_data_f$cluster), margin =2),2)
+ggplot(i_new_data_f, aes(x=P10, fill=cluster)) + 
+  geom_bar(aes(y=..prop.., group = cluster),position=position_dodge())
+```
+
+### 4.1.14 Ingreso mensual promedio en el hogar (P155)
+
+Viendo la distribución de los ingresos mensuales promedio declarados en la encuesta, podemos ver que el grupo A tiene una concentración en las 2 primeras categorías, es decir el 79% de los hogares del grupo A tienen un ingreso mensual promedio de Bs 3500 o menos.  En este mismo intervalo, los grupos B y C concentran el 46% y 40% respectivamente, lo cual es significativamente menor. Entre los grupos B y C podemos observar que el intervalo donde estan mayormente concentrados es el de  Bs 3.501 a Bs 5.000 representando el 33% del grupo B y el 28% del grupo C.  
+
+Además, en los ingresos más altos, en el intervalo de más de Bs 5.001 el grupo B agrupa el 21 % de sus integrantes, mientras que el grupo C en el mismo intervalo tiene un 31% de personas. 
+
+```{r, echo=FALSE}
+round(prop.table(table(i_new_data_f$P155, i_new_data_f$cluster)),2)
+round(prop.table(table(i_new_data_f$P155, i_new_data_f$cluster), margin =2),2)
+ggplot(i_new_data_f, aes(x=P155, fill=cluster)) + 
+  geom_bar(aes(y=..prop.., group = cluster),position=position_dodge())
+```
+ 
+### 4.1.15 Costo último celular (P30)
+
+En cuanto al costo del último celular que adquirieron, podemos observar que hay diferencias significativas en el gasto promedio que hicieron los diferentes grupos, siendo que el grupo A es el que en promedio gasto menos, mientras que los grupos B y C gastaron en promedio, montos más parecidos. Lo interesante en esta parte es observar que si bien en promedio el grupo A gastó menos, la variabilidad de este gasto es mayor en este grupo, llegando a tener observaciones altas, con valores parecidos a los de los otros grupos. Esto puede estar sugiriéndonos que hay personas en el grupo A que, a pesar de sus restricciones en los ingresos (vistas en un punto anterior), están dispuestas a gastar proporcionalmente más en celulares que los otros grupos. Esto puede deberse a que, si bien una característica del grupo A es que su mayoría no posee computadoras ni tablets, su principal medio de interacción con las redes sociales y la información sea justamente el teléfono celular, y por eso, probablemente, es que invierten proporcionalmente más.
+
+```{r, echo=FALSE}
+tapply(i_new_data_f$P30, i_new_data_f$cluster, summary)
+ggplot(i_new_data_f, aes(x=cluster, y=P30, fill=cluster)) + 
+  geom_boxplot()
+```
+
+### 4.1.16 Categoría ocupacional (P152)
+
+La conformación de los grupos en base a la categoría ocupacional, nos muestra que los 3 grupos estan compuestos en su mayoría por estudiantes (A 27%, B 30%, C 28%). Al mismo tiempo es interesante ver algunas diferencias que existen entre los grupos respecto a algunas categorías ocupacionales.  Por ejemplo para los trabajadores por cuenta propia el grupo A tiene al 18% de sus integrantes, contra un 12% para los grupos B y C, viendo una diferencia significativa.  De manera similar una categoría ocupacional que diferencia a los grupos es justamente la de profesional independiente, donde el grupo A cuenta con solo el 1% de sus miembros, mientras que el B y C tienen al 8 y 9 porciento de las personas respectivamente.  Al mismo tiempo es interesante ver que para el grupo A la categoría de ama de casa representa al 16% de las entrevistadas, que es significativamente diferente a los otros grupos. Esta composición puede servirnos para explicar las diferencias en la estructura por sexos entre los grupos.
+
+```{r, echo=FALSE}
+round(prop.table(table(i_new_data_f$P152, i_new_data_f$cluster)),2)
+round(prop.table(table(i_new_data_f$P152, i_new_data_f$cluster), margin =2),2)
+
+
+ggplot(i_new_data_f, aes(x=P152, fill=cluster)) + 
+  geom_bar(aes(y=..prop.., group = cluster),position=position_dodge())
+```
+ 
+## 4.2 Descripción de conglomerados respecto a otras variables de interés
+
+En la subsección anterior vimos algunas diferencias de las características y comportamientos de los grupos, principalmente con aquellas variables que se identificaron como importantes al momento de hacer la clasificación por K-Prototypes.  Ahora vamos a analizar el comportamiento con otras variables de interés.  
+
+### 4.2.1 Edad (P1)
+
+Como se puede observar en la gráfica, las edades promedio de los grupos son muy parecidas, rondan los 32 años, lo que nos muestra que tienen una estructura demográfica parecida. Al mismo tiempo, alguna de las diferencias que podemos obtener al observar los histogramas de las edades de cada grupo, es que dentro del grupo A hay más personas de más de 70 años, mientras que en los grupos B y C, este grupo etario es más reducido. 
+
+```{r, echo=FALSE}
+tapply(i_new_data_f$P1, i_new_data_f$cluster, summary)
+ggplot(i_new_data_f, aes(x=cluster, y=P1, fill=cluster)) + 
+  geom_boxplot()
+
+
+PyrAgeA <-  i_new_data_f[ which(i_new_data_f$cluster=='A'),c("P1", "P148" ) ]
+PyrAgeB <-  i_new_data_f[ which(i_new_data_f$cluster=='B'),c("P1", "P148" ) ]
+PyrAgeC <-  i_new_data_f[ which(i_new_data_f$cluster=='C'),c("P1", "P148" ) ]
+ggplot(data=PyrAgeA, aes(PyrAgeA$P1)) + 
+  geom_histogram(breaks=seq(10, 80, by =3), aes(fill=..count..))+
+  scale_fill_gradient("Count", low = "red", high = "darkred")
+
+ggplot(data=PyrAgeB, aes(PyrAgeB$P1)) + 
+  geom_histogram(breaks=seq(10, 80, by =3), aes(fill=..count..))+
+  scale_fill_gradient("Count", low = "green", high = "darkgreen")
+
+ggplot(data=PyrAgeC, aes(PyrAgeC$P1)) + 
+  geom_histogram(breaks=seq(10, 80, by =3), aes(fill=..count..)) +
+  scale_fill_gradient("Count", low = "blue", high = "darkblue")
+```
+ 
+### 4.2.2 Estado civil (P150)
+
+Respecto al estado civil, podemos identificar que los tres grupos se conforman de una manera similar, siendo que el estado civil más representativo es ser soltero, seguido de casado o conviviente. El tema de soltero tiene coherencia con la estructura de edades y la ocupación principal de la mayoría de los encuestados, estudiantes, mientras que las segunda categoría, la de casado o coviviente, agrupa casi a todo el resto de encuestados.  
+
+```{r, echo=FALSE}
+round(prop.table(table(i_new_data_f$P150, i_new_data_f$cluster)),2)
+ggplot(i_new_data_f, aes(x=P150, fill=cluster)) + 
+  geom_bar(aes(y=..prop.., group = cluster),position=position_dodge())
+```
+
+### 4.2.3 Tenencia de internet fijo en casa o módem (P23)
+
+El acceso a internet en casa, tiene coherencia con la posesión de equipos de computación y además es una de las características donde encontramos más diferencias.  EL 90% de las personas del grupo A no tienen acceso a internet en sus hogares juntamente con el 52% del grupo B y el 49% del grupo C.   Este aspecto es interesante y puede ser uno de los factores que ayuden a explicar porque las personas de los grupos B y C estan más conectados que las del grupo A. Además, si bien las diferencias entre las disponibilidades de internet en sus hogares de los grupos B y C no son grandes, observamos que algo que si diferencia a estos grupos es el uso que le dan a esta conexión, siendo que el grupo C está más conectado.
+
+```{r, echo=FALSE}
+round(prop.table(table(i_new_data_f$P23, i_new_data_f$cluster)),2)
+round(prop.table(table(i_new_data_f$P23, i_new_data_f$cluster), margin =2),2)
+ggplot(i_new_data_f, aes(x=P23, fill=cluster)) + 
+  geom_bar(aes(y=..prop.., group = cluster),position=position_dodge())
+```
+
+### 4.2.4 Sistema Operativo en celular (P36A)
+
+El sistema operativo que utilizan los teléfonos móviles de los entrevistados nos muestra un claro dominio de Android, siendo la categoría más importante para los 3 grupos y llegando a abarcar el 88% del total de la encuesta. Por otra parte, se observa que el conglomerado A tiene menos participación en el uso de Android que los otros grupos, y al mismo tiempo llega a tener el 10% de sus integrantes en la categoría de otros.  Esto nos muestra que en el grupo A hay más personas que utilizan celulares convencionales, es decir aquellos que no son smarthphones, que utilizan otros sistemas operativos diferentes a Android y iOS. Esto también es coherente con el hecho de que en promedio este grupo gasta menos en sus teléfonos. Finalmente, si bien la cuota de mercado de iOS es baja respecto a los demás sistemas operativos, podemos observar que para el grupo C esta categoría es importante, abarcando el 7% del conglomerado.  
+
+```{r, echo=FALSE}
+round(prop.table(table(i_new_data_f$P36A, i_new_data_f$cluster)),2)
+round(prop.table(table(i_new_data_f$P36A, i_new_data_f$cluster), margin =2),2)
+ggplot(i_new_data_f, aes(x=P36A, fill=cluster)) + 
+  geom_bar(aes(y=..prop.., group = cluster),position=position_dodge())
+```
+
+### 4.2.5 Consideración de medio más rápido (P134)
+
+Las preferencias de los grupos respecto a qué medio de comunicación consideran más rápido son parecidas en rasgos generales. En los tres grupos existe una mayoría que considera que la televisión (categoría 1) es el medio más rápido, donde el grupo A resalta en esta opinión. Una segunda proporción importante en los tres grupos considera que las redes sociales (categoría 6) son el medio más rápido, y en esta opinión resalta el grupo B. Por otra parte, una tercera proporción importante de A considera que la radio es el medio más rápido mientras que las respectivas proporciones en los grupos B y C consideran más rápidas a las páginas web (categoría 5). Finalmente, se puede notar que si bien las cuartas proporciones más importantes de los grupos B y C consideran a la radio como medio más rapido, el grupo C resalta en esta opinión respecto a B.
+
+```{r, echo=FALSE}
+round(prop.table(table(i_new_data_f$P134, i_new_data_f$cluster)),2)
+round(prop.table(table(i_new_data_f$P134, i_new_data_f$cluster),margin = 2),2)
+ggplot(i_new_data_f, aes(x=P134, fill=cluster)) + 
+  geom_bar(aes(y=..prop.., group = cluster),position=position_dodge())
+```
+
+### 4.2.6 Consideración de medio más serio (P136)
+
+Si bien las redes sociales son consideradas, después de la TV, como un medio rápido, estas en general no se consideran un medio serio entre los encuestados. Las perspectivas de las mayorías en los grupos nos muestran que la TV sigue siendo el medio de comunicación más serio. Por otra parte, se resalta que los periódicos son una fuente seria de información para proporciones de segunda importancia en los grupos B y C.  En cuanto a la radio, el 20% del grupo A la considera una fuente de información seria, mientras que esta proporción en los demás grupos ronda el 12%.  Al mismo tiempo es interesante resaltar que el grupo C, se muestra en general más escéptico que los otros grupos respecto a la seriedad de los medios de comunicación, siendo que el 8% de las personas del grupo C consideran que ningún medio de comunicación es serio.  
+
+```{r, echo=FALSE}
+round(prop.table(table(i_new_data_f$P136, i_new_data_f$cluster)),2)
+round(prop.table(table(i_new_data_f$P136, i_new_data_f$cluster), margin=2),2)
+ggplot(i_new_data_f, aes(x=P136, fill=cluster)) + 
+  geom_bar(aes(y=..prop.., group = cluster),position=position_dodge())
+```
+
+### 4.2.7 Medio preferido para informarse sobre noticias nacionales (P129A)
+
+La televisión es uno de los medios mejor posicionados en varios aspectos, y en este caso, es el medio preferido para obtener noticias nacionales para los 3 grupos. También podemos observar que las personas del grupo A, después de la televisión prefieren la radio y como tercera fuente a las redes sociales, mientras que el grupo B tiene un comportamiento diferente, prefiere informarse por las redes sociales en vez de por la radio.  El grupo C mantiene una relación muy parecida respecto a tener como fuentes de información nacional a las redes sociales y la radio.  
+
+```{r, echo=FALSE}
+round(prop.table(table(i_new_data_f$P129A, i_new_data_f$cluster)),2)
+round(prop.table(table(i_new_data_f$P129A, i_new_data_f$cluster),margin=2),2)
+ggplot(i_new_data_f, aes(x=P129A, fill=cluster)) + 
+  geom_bar(aes(y=..prop.., group = cluster),position=position_dodge())
+```
+
+### 4.2.8 Medio preferido para informarse sobre ciencia y tecnología (P131A)
+
+Después de la televisión, el medio preferido para informarse de ciencia y tecnología son las páginas web, seguido de las redes sociales. Esta preferencia por las páginas web puede deberse al hecho de que en el contexto nacional el contenido de ciencia y tecnología es muy escazo en los diferentes medios de comunicación, mientras que en las páginas web se pude acceder a este tipo de contenido de manera más fácil ya que a nivel internacional hay sitios especializados en estos aspectos. En cuanto a las redes sociales, se puede notar que estas suelen atraer la atención de los interesados a través de distintas comunidades sobre temas de ciencia y tecnología para luego funcionar como un puente hacia páginas web.
+
+```{r, echo=FALSE}
+round(prop.table(table(i_new_data_f$P131A, i_new_data_f$cluster)),2)
+round(prop.table(table(i_new_data_f$P131A, i_new_data_f$cluster), margin=2),2)
+ggplot(i_new_data_f, aes(x=P131A, fill=cluster)) + 
+  geom_bar(aes(y=..prop.., group = cluster),position=position_dodge())
+```
+
+### 4.2.9 Medio preferido para informarse sobre Negocios/oportunidades laborales/bienes o servicios (P133A)
+
+En este aspecto, cabe resaltar la imporancia que toman los periódicos impresos, siendo que llega a ser el segundo medio de comunicación preferido para informarse sobre negocios, oportunidades laborales, bienes o servicios.  Otra vez un medio importante para el grupo A  es la radio (18%), mientras que los grupos B y C prefieren ver páginas web y redes sociales.  
+
+```{r, echo=FALSE}
+round(prop.table(table(i_new_data_f$P133A, i_new_data_f$cluster)),2)
+round(prop.table(table(i_new_data_f$P133A, i_new_data_f$cluster), margin =2),2)
+ggplot(i_new_data_f, aes(x=P133A, fill=cluster)) + 
+  geom_bar(aes(y=..prop.., group = cluster),position=position_dodge())
+```
+
+### 4.2.10 Tipo de programa preferido en televisión (P15A)
+
+Podemos observar que uno de los tipos de programas más preferidos para ver en la televisión es un programa de noticias, para los 3 grupos. Un siguiente tipo de contenido que les interesa a las personas es el de entretenimiento, y como tercero programación de deportes.  El comportamiento general se aplica a los 3 grupos, pero es interesante observar que tan solo el 1% del grupo B no ve televisión, frente a un 5% del grupo A y un 6% del grupo C, siendo este último grupo uno que más bienes duraderos posee, es decir que no ven televisión por elección propia y no por restricciones de no tener televisor.
+
+```{r, echo=FALSE}
+round(prop.table(table(i_new_data_f$P15A, i_new_data_f$cluster)),2)
+round(prop.table(table(i_new_data_f$P15A, i_new_data_f$cluster), margin =2),2)
+ggplot(i_new_data_f, aes(x=P15A, fill=cluster)) + 
+  geom_bar(aes(y=..prop.., group = cluster),position=position_dodge())
+```
+  
+## 4.3 Interpretación de los conglomerados
+
+Haciendo una división de algunas de las variables que consideramos en nuestro análisis podemos observar lo siguiente: 
+
+* __División de bienes duraderos__  
+Los bienes duraderos son aquellos que no se renuevan constantemente, por ejemplo un computador, este, se espera que tenga alredor de unos 4 años de vida útil en un contexto doméstico, mientras que los bienes no duraderos son aquellos que por sus características, se renuevan con mayor frecuencia, por ejemplo los alimentos.  Hacemos énfasis en esta división porque notamos que las características de nuestros conglomerados aparentemente tienen una relación con estás variables. En los trabajos de Cortinovis 1993 y Filmer & Pritchett 2001 se utilizan algunos bienes duraderos para hacer una clasificación de estatus socio económico de las familias.  En este aspecto el grupo A se diferencia por no poseer varios de los bienes duraderos considerados, mientras que los grupos B y C tienen indicadores muy parecidos y estos si poseen (en una proporción significativamente mayor que A), bienes duraderos.  
+
+* __División de servicios TICs__ 
+Al mismo tiempo los servicios de TICs como ser TV cable en el hogar o internet domiciliario también marcan diferencias significativas entre las características del grupo A respecto a los grupos B y C.
+
+* __Características hogar__ 
+En las características del hogar, como ser el nivel de instrucción del jefe del hogar, o los ingresos promedios reportados, tenemos diferencias importantes entre el grupo A frente a los grupos B y C. Otra vez hay una marcada división. 
+
+* __Intensidad en uso de la TICs__ 
+Respecto al uso de las TICs tenemos diferencias entre los grupos, tanto A como B y C presentan comportamientos diferentes en esta "intensidad" en el uso de las TIC. Unos tienen restricciones para poder utilizarlas, otros prefieren utilizar redes sociales, y los demás prefieren diversificar sus fuentes de información.  
+
+Dado que la clasificación que hicimos a traves de K-Prototypes es no supervisada, los grupos encontrados no tenían a priori una interpretación.  Pero una vez analizadas las variables podemos identificar que parece haber 2 niveles de clasificación, el primero divide al grupo A de los grupos B y C, esta primera división podemos interpretarla como una clasificación de personas por "estatus socio-económico". En esta división , siguiendo la línea del trabajo de Cortinovis 1993, se tiene en el grupo A a personas de escasos recursos respecto a los de la categoría B y C.  Esto se ve reflejado en variables como la posesión de bienes durables, niveles de educación del jefe del hogar, gasto en el último televisor, etc.  
+
+La segunda división, aquella que separa a los grupos B y C, parece ser la interacción y uso que hacen de las TICs. Es decir, si bien el grupo B y C tienen proporciones de acceso a las TICs parecidas (a favor del grupo C), es justamente el conglomerado C el que utiliza estos medios con una mayor intensidad (frecuencia de uso), y con preferencias más diversas respecto a los fines para cada una de estás tecnologías. Mientras que el grupo B está más enfocado en las redes sociales.  
+
+En los siguientes puntos detallaremos estás diferencias, características y perfiles encontrados entre los grupos.  
+
+### 4.3.1 Conglomerado A: Mayoría
+
+El conglomerado A agrupa al  56.59% de la población, este grupo esta caracterizado por tener limitantes al momento de interactuar con las TIC. Uno de los motivos de estas diferencias es que en su mayoría no poseen en su hogar ni una computadora de escritorio, portatil o tablet, con la que podrían acercarse más a estas técnologías. Al mismo tiempo, el 90% de las personas del grupo no tienen acceso a internet fijo ni modem en su hogar.  Probablemente uno de los  principales motivos de estas restricciones sea el ingreso y riqueza del hogar; la mayoría de las personas de este grupo no tiene bienes durables (qué suelen ser proxys de riqueza) como, microondas (94% no tiene), lavadora de ropa (90% no tiene), etc. En promedio son los que menos gastaron en la compra de su últimos celulares, al igual que al adquirir su último televisor. Además el nivel de instrucción de la mayoria de jefes(as) de hogar es menor que de los otros grupos, siendo que el 73% de los jefes de hogar del grupo tienen la secundaria completa o algún grado menor de instrucción. Respecto a los ingresos mensuales promedio del hogar declarados acumulan el 79% de familias que mensualmente tienen Bs 3.500 o menos.  
+
+Estas personas tienen preferencias por medio de comunicación más tradicionales como ser la TV y la radio. No interactuan mucho con la tecnología (el 68% no usa equipos de computación ni tablets); y aquellos del grupo que si lo hacen, tienen una frecuencia baja, el 42% de las personas que si utilizan estos equipos lo hacen de 1 a 3 veces por semana, nuevamente por la limitante que no tienen estos equipos en casa y para acceder a ellos deben hacer esfuerzos como acudir a cafes internet.  También es importante resaltar que es el grupo que cuenta relativamente con más cuenta propistas respecto al total del grupo. Respecto a su distribución geográfica, si bien este grupo esta principalmente concentrado en centros poblados de 2.000 a 10.000 habiantes (40% del conglomerado), su participación no es trivial en las ciudades capitales (32% de conglomerado) ni en ciudades intermedias (28% del congloemrado).  
+
+Uno de los comportamientos más interesantes es que si bien las personas de este grupo gastaron en promedio menos en la compra de su último celular, que los otros grupos, este conglomerado en particular presenta una mayor variabilidad en esta variable. Una de las hipótesis que podría explicar esto, es que justamente las personas de este grupo que quieren interactuar con los TICs, lo hacen preferentemente a través de sus teléfonos celulares, y para tener una mejor experiencia es que invierten más en este bien ya que en su mayoria no tienen acceso a computadores ni internet fijo en su hogar.  
+
+### 4.3.2 Conglomerado B: Intermedio
+
+Este grupo aglutina al 31.45% de la población, dentro de este conglomerado, el 86% de las personas tienen al menos un computador de escritorio, portatil o tablet en su hogar.  Respecto al nivel de instrucción del jefe del hogar tenemos que la categoría más importante es la de universidad terminada, pero algo que diferencia a este grupo es el hecho que tiene un 17% de jefes de hogar con nivel de instrucción técnico.  Consideran a las redes sociales como uno de sus principales medios de comunicación después de la televisión, y las consideran el medio más participativo.  El 27% de las personas del grupo B consideran a las redes sociales como el medio de comunicación más rapido después de la TV. Además, para informarse de noticias nacionales, después de la televisión como principal fuente, el 9% prefiere las redes sociales y un 7% las páginas web.
+
+En este grupo el 58% de las personas utiliza los equipos de computación o tablets entre 3 a 7 días a la semana, con un 22% de personas que los usan todos los días.  
+
+Es curioso encontrar que justamente el grupo que más énfasis hace en las redes sociales como un medio de comunicación importante, pase menos tiempo usando equipos de computación respecto al grupo C, a pesar de que tienen oportunidades de acceso parecidas. Parece ser que las personas del grupo B están más "entusiasmadas" con la conexión a las redes sociales, y a pesar de que se conectan menos, le dan más importancia a este medio en general.  
+
+### 4.3.3 Conglomerado C: Minoria
+
+El conglomerado C tiene al 11.96% de la población, al igual que el grupo B, este grupo tiene acceso a los bienes durables, el 81% de las personas del grupo tienen un computador de escritorio, portatil o tablet en su hogar. En el grado de instrucción del jefe del hogar, si bien la mayor frecuencia es la de universidad completa, el comportamiento interesante es que en este grupo están más personas con posgrados, el 10% de los jefes de hogar de las familias del grupo tiene un posgrado, frente a un 6% del grupo B. Otra característica de este conglomerado es el hecho de que son los más escépticos respecto a la imparcialidad de los medios de comunicación, siendo que el 20% de las personas del grupo consideran que ningún medio de comunicación es imparcial. Al mismo tiempo, el 8% de las personas del grupo consideran que ningún medio de comunicación es serio.  Para informase de noticias nacionales prefieren a la televisión al igual que los otros grupos, pero se diferencian del grupo B por que además prefieren a la par otras fuentes para informarse de noticias nacionales, redes sociales (9%) y radio (9%), lo que nos muestra una diversificación en las fuentes que consultan las personas de este grupo. En otros aspectos, para este grupo los periódicos impresos y la radio son también medios de comunicación alternativos a la television y las redes sociales.
+
+En la distribución geográfica del grupo se observaron concentraciones en La Paz (22%) y Cochabamba(15%), un aspecto interesante ya que los demás grupos no mostraban una predominancia de locación geográfica por departamentos. Justamente Cochabamba es uno de los centros tecnológicos más importantes de Bolivia y La Paz, al ser sede de gobierno, reuné grán parte del capital humano del país.
+
+Finalmente, una de las diferencias más importantes respecto al grupo B es la intensidad del uso de las TICs. El 62% de las personas de este grupo utilizan equipos de computación o tablets entre 3 a 7 días a la semana, siendo que el 31% de las personas los usan todos los días.
+
+# 5. Conclusiones
+
+Fue posible identificar conglomerados en la base de datos siguiendo en primera instancia una etapa de pre-procesamiento seguida por una etapa de modelación donde se consideraron variables categóricas y numéricas. En la etapa de modelación se lograron identificar tres conglomerados considerando un problema de aprendizaje no supervisado, y posteriormente, planteando un problema de aprendizaje supervisado, se logró encontrar un subconjunto de variables imporantes en la definición de los mismos. Para resolver el problema de aprendizaje no supervisado se consideró el modelo K-Prototypes y para el problema de aprendizaje supervisado el modelo Random Forest.
+
+En cuanto a los resultados, a pesar de que nuestra clasificación por conglomerados no tenía un criterio separador a priori, pudimos identificar 3 tipos de categorías claramente diferenciadas y detalladas en la sección anterior.  
+
+La clasificación obtenida fue a 2 niveles, el primero, diferenciando a aquellas personas que tienen restricciones estructurales para poder acceder a la información y la tecnología. Probablemente estas restricciones se deban a un tema de escasos recursos, pero dentro de este grupo, dadas estas restricciones, se identifican personas que hacen un esfuerzo en acceder a medios que les permitan conectarse a las TIC, y en este contexto invierten en "smartphones".  
+
+El segundo nivel de clasificación se da entre aquellas personas que tienen la posibilidad de tener acceso a tecnologías como computadoras y tablets dentro de sus hogares, además de complementarlas con conexiones a internet.  Dentro de este conjunto se diferencian dos grupos, uno de ellos que tiene una preferencia marcada por las redes sociales como medios de comunicación, frente a otro grupo que es más cauteloso y escéptico respecto a la confiabilidad de las fuentes  y prefiere diversificarlas para obtener mayor información.
+
+# 6. Recomendaciones
+
+## 6.1. Recomendaciones metodológicas.  
+
+Es recomendable que en la base de datos se aplique un proceso de ingeniería de variables para incorporar variables que aporten información o incluso puedan marcar mayores diferencias entre los conglomerados.
+
+Para la selección de variables importantes se recomienda obtener medidas de importancia condicionales. En el presente estudio no se logró hacer este análisis por una falta de capacidad computacional en los equipos usados.
+
+En cuanto al análisis de valores faltantes, es recomendable hacer un tratamiento más minucioso al respecto. Haciendo referencia a la primera recomendación, podrían generarse varaibles indicatrices que aporten información respecto al grado de confianza o voluntad de los encuestados a la hora de responder preguntas.
+
+En cuanto a los resultados, se recomienda hacer un contraste entre distribuciones de variables que también se consideran en las encuestas de hogares realizadas por el INE, ya que en general, se espería encontrar similitudes. Un hallazgo que permite plantear esta recomendacion es la alta concentración de estudiantes entre los encuestados.
+
+## 6.2. Recomendaciones de política. 
+
+El conglomerado que presenta restricciones en el acceso a medios para interactuar con la tecnología e información de las TIC, representa una mayoría dentro del contexto nacional (56.59%). La labor pendiente en este tema es llevar a cabo políticas públicas para poder democratizar el acceso a estos medios.  Dar la posibilidad a las personas de este grupo a que puedan acceder a oportunidades para desarrollar habilidades tecnológicas.  
+
+La política de democratización de las TICs, debe ser desarrollada con un enfoque crítico, para que las personas que se interiorizen en el tema, puedan consultar varias fuentes al momento de tomar decisiones, y al mismo tiempo no se sientan abrumadas con la cantidad de inforación disponible en la red.
+
+## 6.3 Líneas de investigación.    
+
+Dentro de la exploración de esta base de datos y con el análisis de los conglomerados, se plantearon hipótesis interesantes como: el nivel de instrucción influye en el escepticismo sobre la imparcialidad y seriedad de los medios de comunicación; las personas de escasos recursos interesadas en temas de tecnología hacen un esfuerzo mayor para poder acceder a medios con los que puedan conectarse y navegar por internet, principalemente celulares;  la televisión es el medio de comunicación más importante para las personas, pero medios alternativos como las redes sociales van cobrando fuerza. Por otra parte, se plantean interronates interesantes como: ¿Serán representativos los resultados en la población?; ¿Cuál sería el comportamiento de un cuarto conglomerado?; y ¿Cuáles serían los resultados si se consideran otros métodos de selección de variables importantes?. Estás hipótesis e interrogantes pueden ser desarrolladas en profundidad en posteriores trabajos y aportar a la línea de investigación sobre TIC en Bolivia.
+
+# 7. Referencias
+
+* Van Buuren, Stef & Groothuis-Oudshoorn, Catharina. (2011). MICE: Multivariate Imputation by Chained Equations in R. Journal of Statistical Software. 45. 10.18637/jss.v045.i03. 
+
+* Zhexue Huang. (1998). "Extensions to the k-Means Algorithm for Clustering Large Data Sets with Categorical Values". Data Mining and Knowledge Discovery 2: 283 – 304.
+
+* Ismaili O.A., Lemaire V., Cornuéjols A. (2014). "A supervised methodology to measure the variables contribution to a clustering". International Conference on Neural Information Processing: 159-166.
+
+* Strobl, Carolin & Hothorn, Torsten & Zeileis, Achim. (2009). Party on! A New, Conditional Variable Importance Measure for Random Forests Available in the party Package. The R Journal. 1. 14-17. 
+
+* Cortinovis  I. , Vella V.  & Ndiku J. (1993). “Construcción of a socio-economic index to facilitate analysis of health data in development countries”. Social Science and Medicine 36: 1087 – 1097.
+
+* Filmer D, Pritchett LH. (2001). “Estimating wealth effect without expenditure data – or tears: an application to educational enrollments in states of India”. Demography 38: 115–32.
+
